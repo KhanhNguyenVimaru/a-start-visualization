@@ -306,11 +306,10 @@ const handlePaneReady = (instance) => {
   <div class="app">
     <header class="toolbar">
       <div>
-        <h1>Ban do gia lap</h1>
-        <p>Di chuyen node tren truc XY va noi cac path giua chung.</p>
+        <h1>coordinate axis</h1>
       </div>
 
-      <div class="actions">
+      <!-- <div class="actions">
         <label class="api-input">
           <span>API URL</span>
           <input v-model="apiUrl" type="text" placeholder="http://localhost:3000/api/map" />
@@ -319,7 +318,7 @@ const handlePaneReady = (instance) => {
         <button type="button" class="btn primary" :disabled="isSending" @click="sendGraph">
           {{ isSending ? 'Dang gui...' : 'Gui du lieu' }}
         </button>
-      </div>
+      </div> -->
     </header>
 
     <div class="canvas" ref="canvasRef">
@@ -403,13 +402,13 @@ const handlePaneReady = (instance) => {
         <pre>{{ formattedPayload }}</pre>
       </div>
       <div class="status">
-        <h2>Ket qua</h2>
+        <h2>Result</h2>
         <template v-if="lastResponse">
-          <p>Server tra ve:</p>
+          <p>Server response:</p>
           <pre>{{ responsePreview }}</pre>
         </template>
-        <p v-else-if="lastError" class="error">Loi: {{ lastError }}</p>
-        <p v-else>Chua gui du lieu.</p>
+        <p v-else-if="lastError" class="error">Error: {{ lastError }}</p>
+        <p v-else>No data</p>
       </div>
     </section>
   </div>
