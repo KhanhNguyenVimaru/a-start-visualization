@@ -62,12 +62,17 @@ interface SearchRecord extends GridCell {
   key: string
 }
 
-const GRID_ROWS = 34
-const GRID_COLS = 34
+const GRID_MIN_SIZE = 24
+const GRID_MAX_SIZE = 70
+const DEFAULT_GRID_SIZE = 36
 const PADDING_FACTOR = 0.4
 const BLOCK_THRESHOLD = 0.72
 const MIN_SPAN = 0.012
 const MAX_EXPLORATION_MARKERS = 220
+
+const gridSize = ref(DEFAULT_GRID_SIZE)
+const gridRows = computed(() => gridSize.value)
+const gridCols = computed(() => gridSize.value)
 
 const mapContainer = ref<HTMLDivElement | null>(null)
 const map = ref<L.Map | null>(null)
@@ -81,7 +86,7 @@ const searchResult = ref<SearchResult | null>(null)
 const startMarker = ref<L.Marker | null>(null)
 const endMarker = ref<L.Marker | null>(null)
 const pathLayer = ref<L.Polyline | null>(null)
-const explorationLayer = ref<L.LayerGroup | null>(null)
+const explorationLayer = ref<L.Polyline | null>(null)
 const blockedLayer = ref<L.LayerGroup | null>(null)
 
 const recentFrames = computed(() =>
@@ -93,6 +98,10 @@ const formattedEnd = computed(() => formatPoint(endPoint.value))
 const hasBothPoints = computed(() => Boolean(startPoint.value && endPoint.value))
 
 let searchToken = 0
+let explorationAnimationId: number | null = null
+let explorationAnimationResolve: (() => void) | null = null
+let pathAnimationId: number | null = null
+let pathAnimationResolve: (() => void) | null = null
 
 onMounted(() => {
   if (!mapContainer.value) return
@@ -113,6 +122,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopPathAnimation()
+  clearExplorationTrail()
   map.value?.off('click', handleMapClick)
   map.value?.remove()
 })
@@ -122,6 +133,12 @@ watch([startPoint, endPoint], ([start, end]) => {
     runSearch()
   } else {
     cancelSearch()
+  }
+})
+
+watch(gridSize, () => {
+  if (hasBothPoints.value) {
+    runSearch()
   }
 })
 
@@ -194,23 +211,26 @@ async function runSearch() {
 
     if (!result.path.length) {
       searchResult.value = null
-      drawPathOnMap([])
-      drawExplorationMarkers([])
+      await drawPathOnMap([])
+      clearExplorationTrail()
       focusOnGrid(builtGrid.meta)
       error.value = 'Không tìm thấy đường đi vì chướng ngại quá dày ở vùng này.'
       return
     }
 
     searchResult.value = result
-    drawPathOnMap(result.path)
-    drawExplorationMarkers(result.frames)
+    await drawPathOnMap([])
+    await drawExplorationMarkers(result.frames)
+    if (token !== searchToken) return
+    await drawPathOnMap(result.path, true)
+    if (token !== searchToken) return
     focusOnPath(result.path)
   } catch (err) {
     console.error(err)
     if (token !== searchToken) return
     searchResult.value = null
-    drawPathOnMap([])
-    drawExplorationMarkers([])
+    await drawPathOnMap([])
+    clearExplorationTrail()
     error.value = err instanceof Error ? err.message : 'Đã có lỗi trong lúc chạy A*.'
   } finally {
     if (token === searchToken) {
@@ -225,46 +245,137 @@ function cancelSearch() {
   searchResult.value = null
   error.value = ''
   drawPathOnMap([])
-  drawExplorationMarkers([])
+  clearExplorationTrail()
   clearBlockedLayer()
 }
 
-function drawPathOnMap(points: LatLngPoint[]) {
+function stopPathAnimation() {
+  if (pathAnimationId !== null) {
+    cancelAnimationFrame(pathAnimationId)
+    pathAnimationId = null
+  }
+  if (pathAnimationResolve) {
+    const resolve = pathAnimationResolve
+    pathAnimationResolve = null
+    resolve()
+  }
+}
+
+function clearExplorationTrail() {
+  if (explorationAnimationId !== null) {
+    cancelAnimationFrame(explorationAnimationId)
+    explorationAnimationId = null
+  }
+  if (explorationAnimationResolve) {
+    const resolve = explorationAnimationResolve
+    explorationAnimationResolve = null
+    resolve()
+  }
+  explorationLayer.value?.remove()
+  explorationLayer.value = null
+}
+
+async function drawPathOnMap(points: LatLngPoint[], animate = false) {
   const currentMap = map.value as L.Map | null
+  stopPathAnimation()
   pathLayer.value?.remove()
   pathLayer.value = null
   if (!currentMap || !points.length) return
 
   const latLngs = points.map((p) => [p.lat, p.lon] as L.LatLngTuple)
-  pathLayer.value = L.polyline(latLngs, {
-    color: '#38bdf8',
+  pathLayer.value = L.polyline([latLngs[0]!], {
+    color: '#22c55e',
     weight: 5,
-    opacity: 0.9,
+    opacity: 0.95,
   }).addTo(currentMap)
+
+  if (!animate || latLngs.length === 1) {
+    pathLayer.value.setLatLngs(latLngs)
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    pathAnimationResolve = () => {
+      pathAnimationResolve = null
+      resolve()
+    }
+    let idx = 1
+    const step = () => {
+      const line = pathLayer.value
+      if (!line) {
+        pathAnimationId = null
+        const finish = pathAnimationResolve
+        pathAnimationResolve = null
+        finish?.()
+        return
+      }
+      if (idx >= latLngs.length) {
+        pathAnimationId = null
+        const finish = pathAnimationResolve
+        pathAnimationResolve = null
+        finish?.()
+        return
+      }
+      line.addLatLng(latLngs[idx]!)
+      idx += 1
+      pathAnimationId = requestAnimationFrame(step)
+    }
+    pathAnimationId = requestAnimationFrame(step)
+  })
 }
 
-function drawExplorationMarkers(frames: AStarFrame[]) {
+async function drawExplorationMarkers(frames: AStarFrame[]) {
   const currentMap = map.value as L.Map | null
-  explorationLayer.value?.remove()
-  explorationLayer.value = null
+  clearExplorationTrail()
   if (!currentMap || !frames.length) return
 
   const step = Math.max(1, Math.floor(frames.length / MAX_EXPLORATION_MARKERS))
-  const group = L.layerGroup()
+  const latLngs: L.LatLngTuple[] = []
   for (let i = 0; i < frames.length; i += step) {
     const frame = frames[i]
     if (!frame) continue
-    const marker = L.circleMarker([frame.lat, frame.lon], {
-      radius: 5,
-      weight: 1,
-      color: '#f97316',
-      fillColor: '#fdba74',
-      fillOpacity: 0.9,
-    })
-    group.addLayer(marker)
+    latLngs.push([frame.lat, frame.lon])
   }
-  group.addTo(currentMap)
-  explorationLayer.value = group
+  if (!latLngs.length) return
+
+  explorationLayer.value = L.polyline([latLngs[0]!], {
+    color: '#ef4444',
+    weight: 3,
+    opacity: 0.85,
+  }).addTo(currentMap)
+
+  if (latLngs.length === 1) {
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    explorationAnimationResolve = () => {
+      explorationAnimationResolve = null
+      resolve()
+    }
+    let idx = 1
+    const stepAnimation = () => {
+      const line = explorationLayer.value
+      if (!line) {
+        explorationAnimationId = null
+        const finish = explorationAnimationResolve
+        explorationAnimationResolve = null
+        finish?.()
+        return
+      }
+      if (idx >= latLngs.length) {
+        explorationAnimationId = null
+        const finish = explorationAnimationResolve
+        explorationAnimationResolve = null
+        finish?.()
+        return
+      }
+      line.addLatLng(latLngs[idx]!)
+      idx += 1
+      explorationAnimationId = requestAnimationFrame(stepAnimation)
+    }
+    explorationAnimationId = requestAnimationFrame(stepAnimation)
+  })
 }
 
 function drawBlockedCells(grid: BuiltGrid) {
@@ -335,7 +446,7 @@ function resetAll() {
   endMarker.value?.remove()
   endMarker.value = null
   drawPathOnMap([])
-  drawExplorationMarkers([])
+  clearExplorationTrail()
   clearBlockedLayer()
 }
 
@@ -355,25 +466,27 @@ function buildGrid(start: LatLngPoint, end: LatLngPoint): BuiltGrid {
   const latMax = Math.max(start.lat, end.lat) + latSpan * PADDING_FACTOR
   const lonMin = Math.min(start.lon, end.lon) - lonSpan * PADDING_FACTOR
   const lonMax = Math.max(start.lon, end.lon) + lonSpan * PADDING_FACTOR
+  const rows = gridRows.value
+  const cols = gridCols.value
 
   const meta: GridMeta = {
-    rows: GRID_ROWS,
-    cols: GRID_COLS,
+    rows,
+    cols,
     latMin,
     latMax,
     lonMin,
     lonMax,
-    latStep: (latMax - latMin) / GRID_ROWS,
-    lonStep: (lonMax - lonMin) / GRID_COLS,
+    latStep: (latMax - latMin) / rows,
+    lonStep: (lonMax - lonMin) / cols,
   }
 
   const cells: GridCell[][] = []
   const lookup = new Map<string, GridCell>()
   let blocked = 0
 
-  for (let row = 0; row < GRID_ROWS; row += 1) {
+  for (let row = 0; row < rows; row += 1) {
     const rowCells: GridCell[] = []
-    for (let col = 0; col < GRID_COLS; col += 1) {
+    for (let col = 0; col < cols; col += 1) {
       const lat = latMin + (row + 0.5) * meta.latStep
       const lon = lonMin + (col + 0.5) * meta.lonStep
       const noise = pseudoNoise(lat, lon)
@@ -389,7 +502,7 @@ function buildGrid(start: LatLngPoint, end: LatLngPoint): BuiltGrid {
   return {
     meta,
     cells,
-    blockedRatio: blocked / (GRID_ROWS * GRID_COLS),
+    blockedRatio: blocked / (rows * cols),
     cellLookup: lookup,
   }
 }
@@ -731,8 +844,25 @@ class MinHeap<T> {
 
       <section class="details-panel">
         <h2>Diễn tiến tìm đường</h2>
+        <div class="grid-density">
+          <div>
+            <p class="label">Độ chi tiết lưới</p>
+            <p class="grid-density-note">Kéo thanh trượt để tăng/giảm số lượng ô.</p>
+          </div>
+          <div class="grid-density-control">
+            <input
+              class="grid-density-slider"
+              type="range"
+              :min="GRID_MIN_SIZE"
+              :max="GRID_MAX_SIZE"
+              step="2"
+              v-model.number="gridSize"
+            />
+            <span>{{ gridRows }}×{{ gridCols }}</span>
+          </div>
+        </div>
         <p class="hint">
-          Lưới ({{ GRID_ROWS }}×{{ GRID_COLS }}) được tạo theo bounding box của hai điểm. Ta dùng
+          Lưới ({{ gridRows }}×{{ gridCols }}) được tạo theo bounding box của hai điểm. Ta dùng
           heuristic nhất quán nên A* luôn tìm ra đường tối ưu nếu tồn tại.
         </p>
 
@@ -768,34 +898,6 @@ class MinHeap<T> {
             </div>
 
             <div class="table-wrapper">
-              <div>
-                <h3>Nhật ký mở rộng (mới nhất)</h3>
-                <div class="table-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Lat</th>
-                        <th>Lon</th>
-                        <th>g</th>
-                        <th>h</th>
-                        <th>f</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="frame in recentFrames" :key="`frame-${frame.index}`">
-                        <td>{{ frame.index }}</td>
-                        <td>{{ frame.lat.toFixed(4) }}</td>
-                        <td>{{ frame.lon.toFixed(4) }}</td>
-                        <td>{{ formatDistance(frame.g) }}</td>
-                        <td>{{ formatDistance(frame.h) }}</td>
-                        <td>{{ formatDistance(frame.f) }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
               <div>
                 <h3>Đường đi cuối cùng</h3>
                 <div class="table-scroll">
@@ -992,6 +1094,34 @@ class MinHeap<T> {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.grid-density {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.grid-density-control {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-weight: 600;
+}
+
+.grid-density-slider {
+  flex: 1;
+  accent-color: #38bdf8;
+}
+
+.grid-density-note {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 4px 0 0;
 }
 
 .details-panel h2 {
