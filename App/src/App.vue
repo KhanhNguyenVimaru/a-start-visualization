@@ -63,9 +63,9 @@ interface SearchRecord extends GridCell {
   key: string
 }
 
-const GRID_MIN_SIZE = 30
-const GRID_MAX_SIZE = 120
-const DEFAULT_GRID_SIZE = 60
+const GRID_MIN_SIZE = 100
+const GRID_MAX_SIZE = 200
+const DEFAULT_GRID_SIZE = 150
 const PADDING_FACTOR = 0.4
 const BLOCK_THRESHOLD = 0.72
 const MIN_SPAN = 0.012
@@ -87,7 +87,7 @@ const OSM_WALKABLE_HIGHWAYS = new Set([
 const gridSize = ref(DEFAULT_GRID_SIZE)
 const gridRows = computed(() => gridSize.value)
 const gridCols = computed(() => gridSize.value)
-const isHeavyGrid = computed(() => gridSize.value >= 90)
+const isHeavyGrid = computed(() => gridSize.value >= 160)
 const showHeavyPreloader = ref(false)
 const showHeavyLoading = computed(() => showHeavyPreloader.value || (loading.value && isHeavyGrid.value))
 const osmWalkablePoints = ref<LatLngPoint[]>([])
@@ -117,8 +117,9 @@ const recentFrames = computed(() =>
 const pathRows = computed(() => searchResult.value?.path ?? [])
 const formattedStart = computed(() => formatPoint(startPoint.value))
 const formattedEnd = computed(() => formatPoint(endPoint.value))
-const hasBothPoints = computed(() => Boolean(startPoint.value && endPoint.value))
 const showRealMap = ref(false)
+const hasBothPoints = computed(() => Boolean(startPoint.value && endPoint.value))
+const showExplorationLine = ref(true)
 
 let searchToken = 0
 let explorationAnimationId: number | null = null
@@ -176,6 +177,16 @@ watch(osmBounds, () => {
 
 watch(showRealMap, () => {
   syncBaseLayer()
+})
+
+watch(showExplorationLine, (visible) => {
+  if (!visible) {
+    clearExplorationTrail()
+    return
+  }
+  if (searchResult.value) {
+    void drawExplorationMarkers(searchResult.value.frames)
+  }
 })
 
 if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
@@ -422,7 +433,7 @@ function drawOsmWalkablePaths() {
 async function drawExplorationMarkers(frames: AStarFrame[]) {
   const currentMap = map.value as L.Map | null
   clearExplorationTrail()
-  if (!currentMap || !frames.length) return
+  if (!currentMap || !frames.length || !showExplorationLine.value) return
 
   const step = Math.max(1, Math.floor(frames.length / MAX_EXPLORATION_MARKERS))
   const latLngs: L.LatLngTuple[] = []
@@ -553,15 +564,6 @@ function resetAll() {
   clearExplorationTrail()
   clearBlockedLayer()
   showHeavyPreloader.value = false
-}
-
-function swapPoints() {
-  if (!startPoint.value || !endPoint.value) return
-  const oldStart = { ...startPoint.value }
-  startPoint.value = { ...endPoint.value }
-  endPoint.value = oldStart
-  placeMarker(startMarker, startPoint.value, '#16a34a', 'S')
-  placeMarker(endMarker, endPoint.value, '#dc2626', 'G')
 }
 
 function parseOsmWalkableData(xml: string) {
@@ -1013,7 +1015,6 @@ class MinHeap<T> {
         </p>
       </div>
       <div class="hero-actions">
-        <button class="ghost" @click="swapPoints" :disabled="!hasBothPoints">Đổi vị trí</button>
         <button class="ghost" @click="resetAll">Làm mới</button>
       </div>
     </header>
@@ -1053,7 +1054,17 @@ class MinHeap<T> {
           <div class="base-toggle">
             <p class="label">Nền bản đồ</p>
             <button class="map-toggle-btn" :class="{ active: showRealMap }" @click="showRealMap = !showRealMap">
-              {{ showRealMap ? 'Bản đồ OSM' : 'Overlay đơn giản' }}
+              {{ showRealMap ? 'Bản đồ' : 'Overlay' }}
+            </button>
+          </div>
+          <div class="line-toggle">
+            <p class="label">Line đỏ</p>
+            <button
+              class="map-toggle-btn"
+              :class="{ active: showExplorationLine }"
+              @click="showExplorationLine = !showExplorationLine"
+            >
+              {{ showExplorationLine ? 'Ẩn line đỏ' : 'Hiện line đỏ' }}
             </button>
           </div>
         </div>
@@ -1268,7 +1279,8 @@ class MinHeap<T> {
   gap: 24px;
 }
 
-.base-toggle {
+.base-toggle,
+.line-toggle {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1286,9 +1298,9 @@ class MinHeap<T> {
 }
 
 .map-toggle-btn.active {
-  background: #22d3ee;
-  border-color: #0ea5e9;
-  color: #0f172a;
+  background: #1d4ed8;
+  border-color: #2563eb;
+  color: white;
 }
 
 .coord {
@@ -1329,7 +1341,7 @@ class MinHeap<T> {
   height: 46px;
   border-radius: 999px;
   border: 3px solid rgba(248, 250, 252, 0.18);
-  border-top-color: #38bdf8;
+  border-top-color: #2563eb;
   animation: spin 0.8s linear infinite;
 }
 
@@ -1376,7 +1388,7 @@ class MinHeap<T> {
 
 .grid-density-slider {
   flex: 1;
-  accent-color: #38bdf8;
+  accent-color: #2563eb;
 }
 
 .grid-density-note {
