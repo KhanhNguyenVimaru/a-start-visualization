@@ -42,3 +42,13 @@ This document gives a quick overview of the repository structure and explains ho
    ```
 
 After this setup, continue refining algorithms in `Algorithm/` and mirror the logic inside `app/src/` to present them visually.
+
+## Update the bundled OSM map
+
+The Vue app bundles `app/map.osm` (imported via `?raw`) so every grid/walkable check runs against that file. To swap in your own map:
+
+1. Go to [https://www.openstreetmap.org/export](https://www.openstreetmap.org/export), select the bounding box (drag the rectangle or submit coordinates) and hit **Export** to download the `.osm` file.
+2. Rename the exported file to `map.osm` and replace `app/map.osm` in this repo.
+3. Restart `npm run dev` (or rebuild with `npm run build`).
+
+Whenever you replace `map.osm`, the walkable dataset and overlay follow that file exactly. Share these instructions with others so they can drop in their own `.osm` export and see their custom map rendered.
